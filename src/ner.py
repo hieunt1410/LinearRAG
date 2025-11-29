@@ -44,3 +44,12 @@ class SpacyNER:
 
         passage_hash_id_to_entities[passage_hash_id] = list(unique_entities)
         return passage_hash_id_to_entities, sentence_to_entities
+
+    def question_ner(self, question: str):
+        doc = self.nlp(question)
+        question_entities = set()
+        for ent in doc.ents:
+            if ent.label_ == "ORDINAL" or ent.label_ == "CARDINAL":
+                continue
+            question_entities.add(ent.text.strip().lower())
+        return question_entities
