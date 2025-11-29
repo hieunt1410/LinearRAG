@@ -2,7 +2,7 @@ import spacy
 from collections import defaultdict
 
 
-class SpacyNer:
+class SpacyNER:
     def __init__(self, model_name="en_core_web_sm"):
         self.nlp = spacy.load(model_name)
 

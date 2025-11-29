@@ -5,7 +5,6 @@ import json
 from collections import defaultdict
 import numpy as np
 import math
-from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 from src.ner import SpacyNER
 import igraph as ig

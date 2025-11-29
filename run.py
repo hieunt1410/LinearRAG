@@ -1,12 +1,9 @@
 import argparse
 import json
-from transformers import AutoTokenizer, AutoModel
 from sentence_transformers import SentenceTransformer
 from src.config import LinearRAGConfig
 from src.LinearRAG import LinearRAG
 import os
-import warnings
-from src.evaluate import Evaluator
 from src.utils import LLM_Model
 from src.utils import setup_logging
 from datetime import datetime
@@ -88,3 +85,8 @@ def main():
         passage_ratio=args.passage_ratio,
         top_k_sentence=args.top_k_sentence,
     )
+    rag_model = LinearRAG(global_config=config)
+    rag_model.index(passages)
+    retrieval_results = rag_model.retrieve(questions)
+    with open(f"results/{args.dataset_name}/{time}/retrieval_results.json", "w") as f:
+        json.dump(retrieval_results, f, indent=4)
