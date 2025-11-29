@@ -76,20 +76,22 @@ def main():
     setup_logging(f"results/{args.dataset_name}/{time}/log.txt")
     llm_model = LLM_Model(args.llm_model)
     config = LinearRAGConfig(
-        spacy_model=args.spacy_model,
+        dataset_name=args.dataset_name,
         embedding_model=embedding_model,
-        llm_model=llm_model,
+        spacy_model=args.spacy_model,
         max_workers=args.max_workers,
+        llm_model=llm_model,
         max_iterations=args.max_iterations,
         iteration_threshold=args.iteration_threshold,
         passage_ratio=args.passage_ratio,
         top_k_sentence=args.top_k_sentence,
     )
-    rag_model = LinearRAG(global_config=config)
+    rag_model = LinearRAG(config=config)
     rag_model.index(passages)
     retrieval_results = rag_model.retrieve(questions)
     with open(f"results/{args.dataset_name}/{time}/retrieval_results.json", "w") as f:
         json.dump(retrieval_results, f, indent=4)
-        
+
+
 if __name__ == "__main__":
     main()
