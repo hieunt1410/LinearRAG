@@ -450,7 +450,7 @@ class LinearRAG:
         for i in range(len(indexed_items) - 1):
             current_node = indexed_items[i][1]
             next_node = indexed_items[i + 1][1]
-            self.node_to_node_stats[current_node][next_node] = 1.0
+            self.nodes_to_nodes_edges[current_node][next_node] = 1.0
 
     def augment_graph(self):
         self.add_nodes()
