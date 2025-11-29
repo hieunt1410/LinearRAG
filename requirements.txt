@@ -1,0 +1,13 @@
+httpx[socks]
+numpy
+openai
+pandas
+python-igraph
+scikit-learn
+sentence-transformers
+spacy
+tqdm
+transformers
+huggingface-hub
+pyarrow
+igraph
