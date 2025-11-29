@@ -5,6 +5,7 @@ import json
 from collections import defaultdict
 import numpy as np
 import math
+from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 from src.ner import SpacyNER
 import igraph as ig
@@ -15,126 +16,93 @@ logger = logging.getLogger(__name__)
 
 
 class LinearRAG:
-    def __init__(self, config):
-        self.config = config
+    def __init__(self, global_config):
+        self.config = global_config
         logger.info(f"Initializing LinearRAG with config: {self.config}")
-        self.dataset_name = config.dataset_name
-        self.llm_model = config.llm_model
-        self.spacy_ner = SpacyNER(model_name=config.spacy_model)
-        self.graph = ig.Graph(directed=False)
-
+        self.dataset_name = global_config.dataset_name
         self.load_embedding_store()
+        self.llm_model = self.config.llm_model
+        self.spacy_ner = SpacyNER(self.config.spacy_model)
+        self.graph = ig.Graph(directed=False)
 
     def load_embedding_store(self):
         self.passage_embedding_store = EmbeddingStore(
-            embedding_model=self.config.embedding_model,
-            db_filename=f"datasets/{self.dataset_name}_passage_embeddings.parquet",
-            batch_size=16,
-            namespace=f"{self.dataset_name}_passage",
+            self.config.embedding_model,
+            db_filename=os.path.join(
+                self.config.working_dir, self.dataset_name, "passage_embedding.parquet"
+            ),
+            batch_size=self.config.batch_size,
+            namespace="passage",
         )
         self.entity_embedding_store = EmbeddingStore(
-            embedding_model=self.config.embedding_model,
-            db_filename=f"datasets/{self.dataset_name}_entity_embeddings.parquet",
-            batch_size=16,
-            namespace=f"{self.dataset_name}_entity",
+            self.config.embedding_model,
+            db_filename=os.path.join(
+                self.config.working_dir, self.dataset_name, "entity_embedding.parquet"
+            ),
+            batch_size=self.config.batch_size,
+            namespace="entity",
         )
         self.sentence_embedding_store = EmbeddingStore(
-            embedding_model=self.config.embedding_model,
-            db_filename=f"datasets/{self.dataset_name}_sentence_embeddings.parquet",
-            batch_size=16,
-            namespace=f"{self.dataset_name}_sentence",
+            self.config.embedding_model,
+            db_filename=os.path.join(
+                self.config.working_dir, self.dataset_name, "sentence_embedding.parquet"
+            ),
+            batch_size=self.config.batch_size,
+            namespace="sentence",
         )
 
     def load_existing_data(self, passage_hash_ids):
         self.ner_results_path = os.path.join(
-            self.config.working_dir, "datasets", self.dataset_name, "ner_results.json"
+            self.config.working_dir, self.dataset_name, "ner_results.json"
         )
         if os.path.exists(self.ner_results_path):
-            existing_ner_results = json.load(open(self.ner_results_path, "r"))
-            existing_passage_hash_id_to_entities = existing_ner_results[
+            existing_ner_reuslts = json.load(open(self.ner_results_path))
+            existing_passage_hash_id_to_entities = existing_ner_reuslts[
                 "passage_hash_id_to_entities"
             ]
-            existing_sentences_to_entities = existing_ner_results[
-                "sentences_to_entities"
-            ]
+            existing_sentence_to_entities = existing_ner_reuslts["sentence_to_entities"]
             existing_passage_hash_ids = set(existing_passage_hash_id_to_entities.keys())
             new_passage_hash_ids = set(passage_hash_ids) - existing_passage_hash_ids
-
             return (
                 existing_passage_hash_id_to_entities,
-                existing_sentences_to_entities,
+                existing_sentence_to_entities,
                 new_passage_hash_ids,
             )
         else:
-            return {}, {}, set(passage_hash_ids)
+            return {}, {}, passage_hash_ids
 
-    def index(self, passages):
-        self.nodes_to_nodes_edges = defaultdict(dict)
-        self.entity_to_sentence_edges = defaultdict(dict)
-        self.passage_embedding_store.insert_text(passages)
-        hash_id_to_passage = self.passage_embedding_store.get_hash_id_to_text()
-        (
-            existing_passage_hash_id_to_entities,
-            existing_sentences_to_entities,
-            new_passage_hash_ids,
-        ) = self.load_existing_data(list(hash_id_to_passage.keys()))
-        logger.info(
-            f"Loaded existing NER results for {len(existing_passage_hash_id_to_entities)} passages."
-        )
-        if len(new_passage_hash_ids):
-            new_hash_id_to_passage = {
-                h: hash_id_to_passage[h] for h in new_passage_hash_ids
-            }
-            new_passage_hash_id_to_entities, new_sentences_to_entities = (
-                self.spacy_ner.batch_ner(
-                    new_hash_id_to_passage, max_workers=self.config.max_workers
+    def qa(self, questions):
+        retrieval_results = self.retrieve(questions)
+        system_prompt = """As an advanced reading comprehension assistant, your task is to analyze text passages and corresponding questions meticulously. Your response start after "Thought: ", where you will methodically break down the reasoning process, illustrating how you arrive at conclusions. Conclude with "Answer: " to present a concise, definitive response, devoid of additional elaborations."""
+        all_messages = []
+        for retrieval_result in retrieval_results:
+            question = retrieval_result["question"]
+            sorted_passage = retrieval_result["sorted_passage"]
+            prompt_user = """"""
+            for passage in sorted_passage:
+                prompt_user += f"{passage}\n"
+            prompt_user += f"Question: {question}\n Thought: "
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt_user},
+            ]
+            all_messages.append(messages)
+        with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
+            all_qa_results = list(
+                tqdm(
+                    executor.map(self.llm_model.infer, all_messages),
+                    total=len(all_messages),
+                    desc="QA Reading (Parallel)",
                 )
             )
 
-            existing_passage_hash_id_to_entities.update(new_passage_hash_id_to_entities)
-            existing_sentences_to_entities.update(new_sentences_to_entities)
-        self.save_ner_results(
-            existing_passage_hash_id_to_entities, existing_sentences_to_entities
-        )
-        logger.info(
-            f"Total NER results for {len(existing_passage_hash_id_to_entities)} passages after processing new data."
-        )
-
-        (
-            entity_nodes,
-            sentence_nodes,
-            self.entity_to_sentence,
-            self.sentence_to_entity,
-        ) = self.extract_nodes_and_edges(
-            existing_passage_hash_id_to_entities, existing_sentences_to_entities
-        )
-        self.entity_embedding_store.insert_text(list(entity_nodes))
-        self.sentence_embedding_store.insert_text(list(sentence_nodes))
-        self.entity_hash_id_to_sentence_hash_ids = defaultdict(list)
-        for entity, sentences in self.entity_to_sentence.items():
-            entity_hash_id = self.entity_embedding_store.text_to_hash_id[entity]
-            sentence_hash_ids = [
-                self.sentence_embedding_store.text_to_hash_id[sent]
-                for sent in sentences
-            ]
-            self.entity_hash_id_to_sentence_hash_ids[entity_hash_id] = sentence_hash_ids
-        
-        self.sentence_hash_id_to_entity_hash_ids = defaultdict(list)
-        for sentence, entities in self.sentence_to_entity.items():
-            sentence_hash_id = self.sentence_embedding_store.text_to_hash_id[sentence]
-            entity_hash_ids = [
-                self.entity_embedding_store.text_to_hash_id[ent] for ent in entities
-            ]
-            self.sentence_hash_id_to_entity_hash_ids[sentence_hash_id] = entity_hash_ids
-        self.add_entity_to_passage_edges(existing_passage_hash_id_to_entities)
-        self.add_adjacent_passage_edges()
-        self.augment_graph()
-        output_graphml_path = os.path.join(
-            self.config.working_dir, self.dataset_name, "LinearRAG.graphml"
-        )
-        os.makedirs(os.path.dirname(output_graphml_path), exist_ok=True)
-        self.graph.write_graphml(output_graphml_path)
-        logger.info(f"Saved graph to {output_graphml_path}")
+        for qa_result, question_info in zip(all_qa_results, retrieval_results):
+            try:
+                pred_ans = qa_result.split("Answer:")[1].strip()
+            except:
+                pred_ans = qa_result
+            question_info["pred_answer"] = pred_ans
+        return retrieval_results
 
     def retrieve(self, questions):
         self.entity_hash_ids = list(self.entity_embedding_store.hash_id_to_text.keys())
@@ -262,52 +230,6 @@ class LinearRAG:
 
         return sorted_passage_hash_ids, sorted_passage_scores.tolist()
 
-    def calculate_passage_scores(self, question_embedding, actived_entities):
-        passage_weights = np.zeros(len(self.graph.vs["name"]))
-        dpr_passage_indices, dpr_passage_scores = self.dense_passage_retrieval(
-            question_embedding
-        )
-        dpr_passage_scores = min_max_normalize(dpr_passage_scores)
-        for i, dpr_passage_index in enumerate(dpr_passage_indices):
-            total_entity_bonus = 0
-            passage_hash_id = self.passage_embedding_store.hash_ids[dpr_passage_index]
-            dpr_passage_score = dpr_passage_scores[i]
-            passage_text_lower = self.passage_embedding_store.hash_id_to_text[
-                passage_hash_id
-            ].lower()
-            for entity_hash_id, (
-                entity_id,
-                entity_score,
-                tier,
-            ) in actived_entities.items():
-                entity_lower = self.entity_embedding_store.hash_id_to_text[
-                    entity_hash_id
-                ].lower()
-                entity_occurrences = passage_text_lower.count(entity_lower)
-                if entity_occurrences > 0:
-                    denom = tier if tier >= 1 else 1
-                    entity_bonus = (
-                        entity_score * math.log(1 + entity_occurrences) / denom
-                    )
-                    total_entity_bonus += entity_bonus
-            passage_score = self.config.passage_ratio * dpr_passage_score + math.log(
-                1 + total_entity_bonus
-            )
-            passage_node_idx = self.node_name_to_vertex_idx[passage_hash_id]
-            passage_weights[passage_node_idx] = passage_score
-        return passage_weights
-
-    def dense_passage_retrieval(self, question_embedding):
-        question_emb = question_embedding.reshape(1, -1)
-        question_passage_similarities = np.dot(
-            self.passage_embeddings, question_emb.T
-        ).flatten()
-        sorted_passage_indices = np.argsort(question_passage_similarities)[::-1]
-        sorted_passage_scores = question_passage_similarities[
-            sorted_passage_indices
-        ].tolist()
-        return sorted_passage_indices, sorted_passage_scores
-
     def calculate_entity_scores(
         self,
         question_embedding,
@@ -390,6 +312,54 @@ class LinearRAG:
             iteration += 1
         return entity_weights, actived_entities
 
+    def calculate_passage_scores(self, question_embedding, actived_entities):
+        passage_weights = np.zeros(len(self.graph.vs["name"]))
+        dpr_passage_indices, dpr_passage_scores = self.dense_passage_retrieval(
+            question_embedding
+        )
+        dpr_passage_scores = min_max_normalize(dpr_passage_scores)
+        for i, dpr_passage_index in enumerate(dpr_passage_indices):
+            total_entity_bonus = 0
+            passage_hash_id = self.passage_embedding_store.hash_ids[dpr_passage_index]
+            dpr_passage_score = dpr_passage_scores[i]
+            passage_text_lower = self.passage_embedding_store.hash_id_to_text[
+                passage_hash_id
+            ].lower()
+            for entity_hash_id, (
+                entity_id,
+                entity_score,
+                tier,
+            ) in actived_entities.items():
+                entity_lower = self.entity_embedding_store.hash_id_to_text[
+                    entity_hash_id
+                ].lower()
+                entity_occurrences = passage_text_lower.count(entity_lower)
+                if entity_occurrences > 0:
+                    denom = tier if tier >= 1 else 1
+                    entity_bonus = (
+                        entity_score * math.log(1 + entity_occurrences) / denom
+                    )
+                    total_entity_bonus += entity_bonus
+            passage_score = self.config.passage_ratio * dpr_passage_score + math.log(
+                1 + total_entity_bonus
+            )
+            passage_node_idx = self.node_name_to_vertex_idx[passage_hash_id]
+            passage_weights[passage_node_idx] = (
+                passage_score * self.config.passage_node_weight
+            )
+        return passage_weights
+
+    def dense_passage_retrieval(self, question_embedding):
+        question_emb = question_embedding.reshape(1, -1)
+        question_passage_similarities = np.dot(
+            self.passage_embeddings, question_emb.T
+        ).flatten()
+        sorted_passage_indices = np.argsort(question_passage_similarities)[::-1]
+        sorted_passage_scores = question_passage_similarities[
+            sorted_passage_indices
+        ].tolist()
+        return sorted_passage_indices, sorted_passage_scores
+
     def get_seed_entities(self, question):
         question_entities = list(self.spacy_ner.question_ner(question))
         if len(question_entities) == 0:
@@ -410,9 +380,11 @@ class LinearRAG:
             best_entity_idx = np.argmax(entity_scores)
             best_entity_score = entity_scores[best_entity_idx]
             best_entity_hash_id = self.entity_hash_ids[best_entity_idx]
-
+            best_entity_text = self.entity_embedding_store.hash_id_to_text[
+                best_entity_hash_id
+            ]
             seed_entity_indices.append(best_entity_idx)
-            seed_entity_texts.append(question_entities[best_entity_idx])
+            seed_entity_texts.append(best_entity_text)
             seed_entity_hash_ids.append(best_entity_hash_id)
             seed_entity_scores.append(best_entity_score)
         return (
@@ -422,24 +394,68 @@ class LinearRAG:
             seed_entity_scores,
         )
 
-    def add_entity_to_passage_edges(self, passage_hash_id_to_entities):
-        passage_to_entity_count = defaultdict(int)
-        passage_to_all_entities_count = defaultdict(int)
-
-        for passage_hash_id, entities in passage_hash_id_to_entities.items():
-            passage = self.passage_embedding_store.hash_id_to_text[passage_hash_id]
-            for entity in entities:
-                entity_hash_id = self.entity_embedding_store.text_to_hash_id[entity]
-                count = passage.count(entity)
-                passage_to_entity_count[(passage_hash_id, entity_hash_id)] = count
-                passage_to_all_entities_count[passage_hash_id] += count
-
-        for (passage_hash_id, entity_hash_id), count in passage_to_entity_count.items():
-            score = count / passage_to_all_entities_count[passage_hash_id]
-            self.nodes_to_nodes_edges[passage_hash_id][entity_hash_id] = score
+    def index(self, passages):
+        self.node_to_node_stats = defaultdict(dict)
+        self.entity_to_sentence_stats = defaultdict(dict)
+        self.passage_embedding_store.insert_text(passages)
+        hash_id_to_passage = self.passage_embedding_store.get_hash_id_to_text()
+        (
+            existing_passage_hash_id_to_entities,
+            existing_sentence_to_entities,
+            new_passage_hash_ids,
+        ) = self.load_existing_data(hash_id_to_passage.keys())
+        if len(new_passage_hash_ids) > 0:
+            new_hash_id_to_passage = {
+                k: hash_id_to_passage[k] for k in new_passage_hash_ids
+            }
+            new_passage_hash_id_to_entities, new_sentence_to_entities = (
+                self.spacy_ner.batch_ner(
+                    new_hash_id_to_passage, self.config.max_workers
+                )
+            )
+            self.merge_ner_results(
+                existing_passage_hash_id_to_entities,
+                existing_sentence_to_entities,
+                new_passage_hash_id_to_entities,
+                new_sentence_to_entities,
+            )
+        self.save_ner_results(
+            existing_passage_hash_id_to_entities, existing_sentence_to_entities
+        )
+        (
+            entity_nodes,
+            sentence_nodes,
+            passage_hash_id_to_entities,
+            self.entity_to_sentence,
+            self.sentence_to_entity,
+        ) = self.extract_nodes_and_edges(
+            existing_passage_hash_id_to_entities, existing_sentence_to_entities
+        )
+        self.sentence_embedding_store.insert_text(list(sentence_nodes))
+        self.entity_embedding_store.insert_text(list(entity_nodes))
+        self.entity_hash_id_to_sentence_hash_ids = {}
+        for entity, sentence in self.entity_to_sentence.items():
+            entity_hash_id = self.entity_embedding_store.text_to_hash_id[entity]
+            self.entity_hash_id_to_sentence_hash_ids[entity_hash_id] = [
+                self.sentence_embedding_store.text_to_hash_id[s] for s in sentence
+            ]
+        self.sentence_hash_id_to_entity_hash_ids = {}
+        for sentence, entities in self.sentence_to_entity.items():
+            sentence_hash_id = self.sentence_embedding_store.text_to_hash_id[sentence]
+            self.sentence_hash_id_to_entity_hash_ids[sentence_hash_id] = [
+                self.entity_embedding_store.text_to_hash_id[e] for e in entities
+            ]
+        self.add_entity_to_passage_edges(passage_hash_id_to_entities)
+        self.add_adjacent_passage_edges()
+        self.augment_graph()
+        output_graphml_path = os.path.join(
+            self.config.working_dir, self.dataset_name, "LinearRAG.graphml"
+        )
+        os.makedirs(os.path.dirname(output_graphml_path), exist_ok=True)
+        self.graph.write_graphml(output_graphml_path)
 
     def add_adjacent_passage_edges(self):
-        passage_id_to_text = self.passage_embedding_store.hash_id_to_text
+        passage_id_to_text = self.passage_embedding_store.get_hash_id_to_text()
         index_pattern = re.compile(r"^(\d+):")
         indexed_items = [
             (int(match.group(1)), node_key)
@@ -450,21 +466,26 @@ class LinearRAG:
         for i in range(len(indexed_items) - 1):
             current_node = indexed_items[i][1]
             next_node = indexed_items[i + 1][1]
-            self.nodes_to_nodes_edges[current_node][next_node] = 1.0
+            self.node_to_node_stats[current_node][next_node] = 1.0
 
     def augment_graph(self):
         self.add_nodes()
         self.add_edges()
 
     def add_nodes(self):
-        existing_nodes = {v["name"] for v in self.graph.vs if "name" in v.attributes()}
+        existing_nodes = {
+            v["name"]: v for v in self.graph.vs if "name" in v.attributes()
+        }
         entity_hash_id_to_text = self.entity_embedding_store.get_hash_id_to_text()
         passage_hash_id_to_text = self.passage_embedding_store.get_hash_id_to_text()
         all_hash_id_to_text = {**entity_hash_id_to_text, **passage_hash_id_to_text}
+
         passage_hash_ids = set(passage_hash_id_to_text.keys())
+
         for hash_id, text in all_hash_id_to_text.items():
             if hash_id not in existing_nodes:
                 self.graph.add_vertex(name=hash_id, content=text)
+
         self.node_name_to_vertex_idx = {
             v["name"]: v.index for v in self.graph.vs if "name" in v.attributes()
         }
@@ -478,37 +499,73 @@ class LinearRAG:
         edges = []
         weights = []
 
-        for node_hash_id, node_to_node_edges in self.nodes_to_nodes_edges.items():
-            for neighbor_hash_id, weight in node_to_node_edges.items():
+        for node_hash_id, node_to_node_stats in self.node_to_node_stats.items():
+            for neighbor_hash_id, weight in node_to_node_stats.items():
+                if node_hash_id == neighbor_hash_id:
+                    continue
                 edges.append((node_hash_id, neighbor_hash_id))
                 weights.append(weight)
         self.graph.add_edges(edges)
         self.graph.es["weight"] = weights
 
+    def add_entity_to_passage_edges(self, passage_hash_id_to_entities):
+        passage_to_entity_count = {}
+        passage_to_all_score = defaultdict(int)
+        for passage_hash_id, entities in passage_hash_id_to_entities.items():
+            passage = self.passage_embedding_store.hash_id_to_text[passage_hash_id]
+            for entity in entities:
+                entity_hash_id = self.entity_embedding_store.text_to_hash_id[entity]
+                count = passage.count(entity)
+                passage_to_entity_count[(passage_hash_id, entity_hash_id)] = count
+                passage_to_all_score[passage_hash_id] += count
+        for (passage_hash_id, entity_hash_id), count in passage_to_entity_count.items():
+            score = count / passage_to_all_score[passage_hash_id]
+            self.node_to_node_stats[passage_hash_id][entity_hash_id] = score
+
     def extract_nodes_and_edges(
-        self, passage_hash_id_to_entities, sentences_to_entities
+        self, existing_passage_hash_id_to_entities, existing_sentence_to_entities
     ):
         entity_nodes = set()
         sentence_nodes = set()
+        passage_hash_id_to_entities = defaultdict(set)
         entity_to_sentence = defaultdict(set)
         sentence_to_entity = defaultdict(set)
-
-        for entities in passage_hash_id_to_entities.values():
+        for passage_hash_id, entities in existing_passage_hash_id_to_entities.items():
             for entity in entities:
                 entity_nodes.add(entity)
-        for sentence, entities in sentences_to_entities.items():
+                passage_hash_id_to_entities[passage_hash_id].add(entity)
+        for sentence, entities in existing_sentence_to_entities.items():
             sentence_nodes.add(sentence)
             for entity in entities:
                 entity_to_sentence[entity].add(sentence)
                 sentence_to_entity[sentence].add(entity)
+        return (
+            entity_nodes,
+            sentence_nodes,
+            passage_hash_id_to_entities,
+            entity_to_sentence,
+            sentence_to_entity,
+        )
 
-        return entity_nodes, sentence_nodes, entity_to_sentence, sentence_to_entity
+    def merge_ner_results(
+        self,
+        existing_passage_hash_id_to_entities,
+        existing_sentence_to_entities,
+        new_passage_hash_id_to_entities,
+        new_sentence_to_entities,
+    ):
+        existing_passage_hash_id_to_entities.update(new_passage_hash_id_to_entities)
+        existing_sentence_to_entities.update(new_sentence_to_entities)
+        return existing_passage_hash_id_to_entities, existing_sentence_to_entities
 
-    def save_ner_results(self, passage_hash_id_to_entities, sentences_to_entities):
-        ner_results = {
-            "passage_hash_id_to_entities": passage_hash_id_to_entities,
-            "sentences_to_entities": sentences_to_entities,
-        }
+    def save_ner_results(
+        self, existing_passage_hash_id_to_entities, existing_sentence_to_entities
+    ):
         with open(self.ner_results_path, "w") as f:
-            json.dump(ner_results, f)
-        logger.info(f"Saved NER results to {self.ner_results_path}")
+            json.dump(
+                {
+                    "passage_hash_id_to_entities": existing_passage_hash_id_to_entities,
+                    "sentence_to_entities": existing_sentence_to_entities,
+                },
+                f,
+            )
