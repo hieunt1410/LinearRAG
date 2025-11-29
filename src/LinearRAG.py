@@ -118,6 +118,8 @@ class LinearRAG:
                 for sent in sentences
             ]
             self.entity_hash_id_to_sentence_hash_ids[entity_hash_id] = sentence_hash_ids
+        
+        self.sentence_hash_id_to_entity_hash_ids = defaultdict(list)
         for sentence, entities in self.sentence_to_entity.items():
             sentence_hash_id = self.sentence_embedding_store.text_to_hash_id[sentence]
             entity_hash_ids = [
