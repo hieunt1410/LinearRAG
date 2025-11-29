@@ -20,17 +20,17 @@ def parse_arguments():
     parser.add_argument(
         "--embedding_model",
         type=str,
-        default="model/all-mpnet-base-v2",
+        default="sentence-transformers/all-mpnet-base-v2",
         help="The path of embedding model to use",
     )
     parser.add_argument(
-        "--dataset_name", type=str, default="novel", help="The dataset to use"
+        "--dataset_name", type=str, default="hotpotqa", help="The dataset to use"
     )
     parser.add_argument(
         "--llm_model", type=str, default="gpt-4o-mini", help="The LLM model to use"
     )
     parser.add_argument(
-        "--max_workers", type=int, default=16, help="The max number of workers to use"
+        "--max_workers", type=int, default=2, help="The max number of workers to use"
     )
     parser.add_argument(
         "--max_iterations",
@@ -90,3 +90,6 @@ def main():
     retrieval_results = rag_model.retrieve(questions)
     with open(f"results/{args.dataset_name}/{time}/retrieval_results.json", "w") as f:
         json.dump(retrieval_results, f, indent=4)
+        
+if __name__ == "__main__":
+    main()

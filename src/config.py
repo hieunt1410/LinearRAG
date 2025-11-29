@@ -4,12 +4,12 @@ from src.utils import LLM_Model
 @dataclass
 class LinearRAGConfig:
     dataset_name: str
-    embedding_model: str = "all-mpnet-base-v2"
+    embedding_model: str = "sentence-transformers/all-mpnet-base-v2"
     llm_model: LLM_Model = None
     chunk_token_size: int = 1000
     chunk_overlap_token_size: int = 100
     spacy_model: str = "en_core_web_trf"
-    working_dir: str = "./import"
+    working_dir: str = "./"
     batch_size: int = 8
     max_workers: int = 2
     retrieval_top_k: int = 5
