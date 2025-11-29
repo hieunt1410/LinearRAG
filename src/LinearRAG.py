@@ -11,15 +11,16 @@ from src.ner import SpacyNER
 import igraph as ig
 import re
 import logging
+from src.config import LinearRAGConfig
 
 logger = logging.getLogger(__name__)
 
 
 class LinearRAG:
-    def __init__(self, global_config):
-        self.config = global_config
+    def __init__(self, config: LinearRAGConfig):
+        self.config = config
         logger.info(f"Initializing LinearRAG with config: {self.config}")
-        self.dataset_name = global_config.dataset_name
+        self.dataset_name = config.dataset_name
         self.load_embedding_store()
         self.llm_model = self.config.llm_model
         self.spacy_ner = SpacyNER(self.config.spacy_model)
